@@ -1,0 +1,4 @@
+client_address: ''
+spectral_data_dir: '/Users/wtbarnes/Documents/presentations/sphere-workshop-2023-talk/pipeline/data/'
+results_dir: 'data'
+time_interval: 1
