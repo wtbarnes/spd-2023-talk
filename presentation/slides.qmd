@@ -1,6 +1,6 @@
 ---
 title: "Constraining Very Hot Active Region Plasma with MOXSI"
-subtitle: "SPHERE Workshop / College Park, MD / 22 June 2023"
+subtitle: "AAS SPD Meeting / University of Minnesota, Minneapolis, MN / 15 August 2023"
 author:
 - "Will Barnes"
 - "Albert Shih"
@@ -20,7 +20,7 @@ format:
     css: custom.css
 bibliography: references.bib
 csl: apj.csl
-footer: "[wtbarnes.github.io/sphere-workshop-2023-talk](https://wtbarnes.github.io/sphere-workshop-2023-talk)"
+footer: "[wtbarnes.github.io/spd-2023-talk](https://wtbarnes.github.io/spd-2023-talk)"
 title-slide-attributes: 
   data-background-image: "static/sunpy_logo_portrait_powered.png"
   data-background-size: 7%
@@ -34,7 +34,7 @@ import pathlib
 from astropy.coordinates import SkyCoord
 import astropy.table
 import astropy.units as u
-from astropy.visualization import ImageNormalize, AsymmetricPercentileInterval, LogStretch, AsinhStretch
+from astropy.visualization import ImageNormalize, AsymmetricPercentileInterval, LogStretch, AsinhStretch, quantity_support
 from astropy.wcs.utils import wcs_to_celestial_frame
 import numpy as np
 import matplotlib
@@ -42,8 +42,10 @@ import matplotlib.ticker
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from scipy.interpolate import interp1d
 import sunpy.map
 import wesanderson
+from demcmc import EmissionLine, TempBins, ContFuncDiscrete, predict_dem_emcee
 
 import fiasco
 import mocksipipeline
@@ -52,7 +54,6 @@ from mocksipipeline.physics.spectral import SpectralModel
 from mocksipipeline.util import stack_components, read_data_cube
 from overlappy.io import read_overlappogram
 from overlappy.util import color_lat_lon_axes
-from pydrad.visualize import plot_histogram
 import synthesizAR
 from synthesizAR.interfaces.ebtel import read_xml, run_ebtel
 from synthesizAR.instruments.physical import InstrumentDEM
@@ -62,35 +63,13 @@ spectral_palette = wesanderson.color_palettes['Darjeeling Limited'][0]
 filtergram_palette = wesanderson.color_palettes['Moonrise Kingdom'][2]
 
 EBTEL_DIR = '/Users/wtbarnes/Documents/codes/ebtelPlusPlus/'
-data_dir = pathlib.Path('../data/')
-observed_data_dir = data_dir / 'observations' / 'ar_2020-11-09T18:00:00.000'
-simulation_data_dir = pathlib.Path('../pipeline/data')
+old_root_dir = pathlib.Path('../../sphere-workshop-2023-talk/')
+observed_data_dir = old_root_dir / 'data' / 'observations' / 'ar_2020-11-09T18:00:00.000'
+simulation_data_dir = old_root_dir / 'pipeline' / 'data'
+root_dir = pathlib.Path('../')
+data_dir = root_dir / 'data'
+pipeline_dir = root_dir / 'pipeline' / 'data'
 
-line_list = astropy.table.QTable.read(data_dir / 'moxsi-line-list.asdf')
-selected_wavelengths = [
-    6.1803998947143555, # Si XIV
-    6.647900104522705, # Si XIII
-    14.668999671936035, # Fe XIX
-    15.012999534606934, # Fe XVII
-    17.051000595092773, # Fe XVII
-    17.09600067138672, # Fe XVII
-    16.77560043334961, # Fe XVII
-    16.07200050354004, # Fe XVII
-    15.26200008392334, # Fe XVII
-    12.82699966430664, # Fe XX
-    18.967100143432617, # O VIII
-    21.601499557495117, # O VII
-    22.097700119018555, # O VII
-    21.803600311279297, # O VII
-    14.208800315856934, # Fe XVIII
-    9.314299583435059, # Mg XI
-    44.160301208496094, # Si XII
-    13.524900436401367, # Fe XIX
-    12.281999588012695, # Fe XXI
-] * u.AA
-selected_lines = astropy.table.QTable(astropy.table.vstack(
-    [line_list[np.argmin(np.fabs(line_list['wavelength'] - w))] for w in selected_wavelengths]
-))
 
 def multi_event_simulation(config, N, Heq, duration):
     tn = (config['total_time'] - N*duration)/N
@@ -108,19 +87,16 @@ def multi_event_simulation(config, N, Heq, duration):
     res['time'] = u.Quantity(res['time'], 's')
     res['electron_temperature'] = u.Quantity(res['electron_temperature'], 'K')
     res['density'] = u.Quantity(res['density'], 'cm-3')
+    if config['calculate_dem']:
+        res['dem_temperature'] = res['dem_temperature']*u.K
+        delta_logT = np.diff(np.log10(res['dem_temperature'].to_value('K')))[0]
+        logT_edge_left = np.log10(res['dem_temperature'].to_value('K')) - delta_logT/2
+        logT_edge_right = np.log10(res['dem_temperature'].to_value('K')) + delta_logT/2
+        res['dem_temperature_edges'] = 10**np.append(logT_edge_left, logT_edge_right[-1]) * u.K
+        res['dem_corona'] = res['dem_corona']*u.Unit('cm-5K-1')
+        res['dem_tr'] = res['dem_tr']*u.Unit('cm-5K-1')
+        res['em_corona'] = res['dem_corona'] * np.gradient(res['dem_temperature'])
     return res
-
-
-def calculate_em(t, T, n, L,):
-    bins_T = 10**(np.arange(5.5, 7.5, 0.1))*u.K
-    bins_t = np.concatenate((t[:1], (t[1:] + t[:-1])/2., t[-1:])).value*t.unit
-    # Make 2D histogram
-    H, _, _ = np.histogram2d(
-        T.to_value('K'), t.value,
-        bins=(bins_T.to_value('K'), bins_t.value),
-        weights=np.diff(bins_t)/np.diff(bins_t).sum()*L.to_value('cm')*n.to_value('cm-3')**2
-    )
-    return bins_T, H.sum(axis=1)*u.cm**(-5)
 
 
 def add_arrow_from_coords(ax, tail, head, **arrow_kwargs):
@@ -135,6 +111,15 @@ def add_arrow_from_coords(ax, tail, head, **arrow_kwargs):
                                                transform=ax.get_transform(transform),
                                                **arrow_kwargs)
     ax.add_patch(arrow)
+
+
+def compute_intensity(goft, goft_temperature, dem, dem_temperature):
+    f_interp = interp1d(dem_temperature.to_value('K'),
+                        dem.to_value('cm-5 K-1'),
+                        fill_value='extrapolate',
+                        axis=1)
+    dem_interp = f_interp(goft_temperature.to_value('K')) * u.Unit('cm-5 K-1')
+    return np.trapz(dem_interp * goft, goft_temperature, axis=1).mean().to('erg cm-2 s-1')
 ```
 
 ## The "Smoking Gun" of Impulsive Heating
@@ -144,6 +129,12 @@ Heq = 2e-3
 duration = 200.
 L = 40 * u.Mm
 config = read_xml(os.path.join(EBTEL_DIR, 'config', 'ebtel.example.cfg.xml'))
+config['calculate_dem'] = True
+config['dem']['temperature'] = {
+    'bins': 40,
+    'log_min': 5.5,
+    'log_max': 7.5,
+}
 config['loop_length'] = L.to_value('cm')
 res_single = multi_event_simulation(config, 1, Heq, duration)
 res_multi = multi_event_simulation(config, 10, Heq, duration)
@@ -154,19 +145,20 @@ ax1 = plt.subplot2grid((2,2),(0,0))
 ax2 = plt.subplot2grid((2,2),(1,0))
 ax3 = plt.subplot2grid((2,2),(0,1), rowspan=2)
 
-# Plot single nanoflare
-ax1.plot(res_single['time'], res_single['heat'], color=frequency_palette[1], label='impulsive')
-ax2.plot(res_single['time'], res_single['electron_temperature'].to(u.MK), color=frequency_palette[1])
-bins_T, H = calculate_em(
-    res_single['time'], res_single['electron_temperature'], res_single['density'], L)
-plot_histogram(H.value, bins_T.value, ax3, color=frequency_palette[1])
+with quantity_support():
+    # Plot single nanoflare
+    ax1.plot(res_single['time'], res_single['heat'], color=frequency_palette[1], label='impulsive')
+    ax2.plot(res_single['time'], res_single['electron_temperature'].to(u.MK), color=frequency_palette[1])
+    ax3.stairs(res_single['em_corona'].mean(axis=0),
+               edges=res_single['dem_temperature_edges'],
+               color=frequency_palette[1])
 
-# Plot multiple nanoflares
-ax1.plot(res_multi['time'], res_multi['heat'], color=frequency_palette[0], label='steady-ish')
-ax2.plot(res_multi['time'], res_multi['electron_temperature'].to(u.MK), color=frequency_palette[0])
-bins_T, H = calculate_em(
-    res_multi['time'], res_multi['electron_temperature'], res_multi['density'], L)
-plot_histogram(H.value, bins_T.value, ax3, color=frequency_palette[0])
+    # Plot multiple nanoflares
+    ax1.plot(res_multi['time'], res_multi['heat'], color=frequency_palette[0], label='steady-ish')
+    ax2.plot(res_multi['time'], res_multi['electron_temperature'].to(u.MK), color=frequency_palette[0])
+    ax3.stairs(res_multi['em_corona'].mean(axis=0),
+               edges=res_multi['dem_temperature_edges'], 
+               color=frequency_palette[0])
 
 # Annotate phases
 ax3.annotate(f'Heating',
@@ -217,9 +209,170 @@ plt.show()
 
 # Observations are difficult...
 
-## EIS + XRT Not Sufficient
+## EUV Observations Alone Not Sufficient
 
-![@winebarger_defining_2012](static/winebarger_2012_blindspot.png)
+```{python}
+#| eval: true
+#| echo: false
+try:
+    all_lines = astropy.table.QTable.read(data_dir / 'selected_line_list.asdf')
+    hot_lines = all_lines[all_lines['observed by MOXSI']]
+except FileNotFoundError:
+    # This cell computes the full line list for both the hot and cool lines
+    line_list = astropy.table.QTable.read(old_root_dir / 'data' / 'moxsi-line-list.asdf')
+    moxsi_lines = [
+        6.1803998947143555, # Si XIV
+        6.647900104522705, # Si XIII
+        14.668999671936035, # Fe XIX
+        15.012999534606934, # Fe XVII
+        17.051000595092773, # Fe XVII
+        17.09600067138672, # Fe XVII
+        16.77560043334961, # Fe XVII
+        16.07200050354004, # Fe XVII
+        15.26200008392334, # Fe XVII
+        12.82699966430664, # Fe XX
+        18.967100143432617, # O VIII
+        21.601499557495117, # O VII
+        22.097700119018555, # O VII
+        21.803600311279297, # O VII
+        14.208800315856934, # Fe XVIII
+        9.314299583435059, # Mg XI
+        44.160301208496094, # Si XII
+        13.524900436401367, # Fe XIX
+        12.281999588012695, # Fe XXI
+    ] * u.AA
+    hot_lines = astropy.table.QTable(astropy.table.vstack(
+        [line_list[np.argmin(np.fabs(line_list['wavelength'] - w))] for w in moxsi_lines]
+    ))
+    hot_lines = hot_lines[['ion name', 'element', 'wavelength']]
+    # I manually transcribed these from Winebarger et al. (2012)
+    winebarger_lines = [
+        ['Mg V', 276.579],
+        ['Mg VI', 270.394],
+        ['Fe IX', 188.497],
+        ['Fe IX', 197.862],
+        ['Mg VII', 280.737],
+        ['Si VII', 275.368],
+        ['Fe X', 184.536],
+        ['Fe XI', 188.216],
+        ['Fe XII', 192.394],
+        ['Fe XI', 180.401],
+        ['S X', 264.233],
+        ['Si X', 258.375],
+        ['Fe XII', 195.119],
+        ['Fe XIII', 202.044],
+        ['Fe XIII', 203.826],
+        ['Fe XV', 284.160],
+        ['Fe XIV', 270.519],
+        ['Fe XIV', 264.787],
+        ['Fe XVI', 262.984],
+        ['S XIII', 256.686],
+        ['Ca XIV', 193.874],
+        ['Ca XV', 200.972],
+        ['Ca XVI', 208.604],
+        ['Ca XVII', 192.858],
+    ]
+    cool_lines = astropy.table.QTable(
+        data=[[iname for iname,_ in winebarger_lines],
+            [wave for _ ,wave in winebarger_lines]],
+        names=['ion name', 'wavelength'],
+        units={'wavelength': 'AA'},
+    )
+    cool_lines['element'] = list(map(lambda x: x.split()[0], cool_lines['ion name']))
+    all_lines = astropy.table.vstack([hot_lines, cool_lines])
+    all_lines['observed by MOXSI'] = all_lines['wavelength'] < 70*u.Angstrom
+
+    # compute contribution functions
+    temperature = 10**np.arange(5.5, 7.55, 0.05)*u.K
+    density = 1e15*u.Unit('K cm-3') / temperature
+    all_ions = np.unique(all_lines['ion name'])
+    ions = {iname: fiasco.Ion(iname, temperature) for iname in all_ions}
+    goft = {k: v.contribution_function(density, couple_density_to_temperature=True) for k,v in ions.items()}
+
+    # add them to table
+    goft_col = []
+    for row in all_lines:
+        waves = ions[row['ion name']].transitions.wavelength[~ions[row['ion name']].transitions.is_twophoton]
+        iwave = int(np.argmin(np.fabs(waves - row['wavelength'])))
+        goft_col.append(goft[row['ion name']][..., iwave].squeeze())
+    all_lines['contribution function'] = goft_col
+    all_lines['contribution function temperature'] = [temperature,]
+    all_lines['contribution function density'] = [density,]
+
+    # compute intensities and errors
+    error = 0.2
+    all_lines['intensity'] = u.Quantity(
+        [compute_intensity(row['contribution function'],
+                           row['contribution function temperature'],
+                           res_single['dem_corona'],
+                           res_single['dem_temperature'])
+        for row in all_lines]
+    )
+    all_lines['intensity error'] = error * all_lines['intensity']
+    all_lines.write(data_dir / 'selected_line_list.asdf')
+
+all_colors = wesanderson.color_palettes['The Grand Budapest Hotel'][0] + wesanderson.color_palettes['The Grand Budapest Hotel'][1]
+element_colors = {name: color for name, color in zip(np.unique(all_lines['element']), all_colors)}
+```
+
+```{python}
+#| eval: true
+#| echo: false
+mcmc_temperature_bins = TempBins(10**np.arange(5.5, 7.3, 0.1) * u.K)
+
+mcmc_cool_lines = []
+for row in all_lines[all_lines['observed by MOXSI']==False]:
+    name = f"{row['ion name']}_{row['wavelength']:.3f}"
+    eline = EmissionLine(
+        cont_func=ContFuncDiscrete(row['contribution function temperature'],
+                                   row['contribution function'].to_value('erg cm3 s-1')*u.Unit('cm5 K-1'),
+                                   name=name),
+        intensity_obs=row['intensity'].to_value('erg cm-2 s-1'),
+        sigma_intensity_obs=row['intensity error'].to_value('erg cm-2 s-1'),
+        name=name,
+    )
+    mcmc_cool_lines.append(eline)
+
+dem_result_cool = predict_dem_emcee(mcmc_cool_lines, mcmc_temperature_bins, nwalkers=200, nsteps=3000)
+```
+
+```{python}
+fig = plt.figure(figsize=(13, 6.5))
+ax = fig.add_subplot()
+
+with quantity_support():
+    for sample in dem_result_cool.samples:
+        ax.stairs(sample.value*u.Unit('cm-5 K-1')*mcmc_temperature_bins.bin_widths,
+                  edges=mcmc_temperature_bins.edges,
+                  color='k',
+                  alpha=0.35)
+    ax.stairs(res_single['em_corona'].mean(axis=0),
+              edges=res_single['dem_temperature_edges'],
+              color=frequency_palette[1],
+              lw=3)
+    for row in all_lines[all_lines['observed by MOXSI']==False]:
+        ax.plot(row['contribution function temperature'],
+                row['intensity']/row['contribution function'],
+                color=element_colors[row['element']],
+                ls='--')
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(mcmc_temperature_bins.min * 0.9, mcmc_temperature_bins.max * 1.1)
+    ax.set_ylim(1e25*u.cm**(-5), 1e30*u.cm**(-5))
+    ax.set_xlabel('$T$ [K]')
+    ax.set_ylabel('$\mathrm{EM}$ [cm$^{-5}$]')
+
+plt.show()
+```
+
+::: aside
+@winebarger_defining_2012
+:::
+
+::: {.notes}
+Replace this with my simulation/reconstruction of the DEM with only cool only lines
+:::
 
 ## Some Observations in the HXRs
 
@@ -236,7 +389,7 @@ plt.show()
 ::::
 
 ::: aside
-Also NuSTAR, e.g. @marsh_hard_2018, talk by J. Duncan on Tuesday
+See talk by J. Duncan on Thursday, Session 406
 :::
 
 ## Key Diagnostics in the SXR Range
@@ -262,48 +415,82 @@ plt.show()
 ---
 
 ```{python}
-temperature = 10**np.arange(6,7.5,0.05)*u.K
-density = 1e15*u.Unit('K cm-3') / temperature
-ions = {iname: fiasco.Ion(iname, temperature) for iname in np.unique(selected_lines['ion name'])}
-goft = {k: v.contribution_function(density, couple_density_to_temperature=True) for k,v in ions.items()}
-
-element_colors = {name: color for name, color in zip(np.unique(selected_lines['element']), wesanderson.color_palettes['Fantastic Mr. Fox'][0][1:])}
-
-fig = plt.figure(figsize=(14, 8))
+fig = plt.figure(figsize=(13, 8))
 ax = fig.add_subplot(111)
-for row in selected_lines:
-    waves = ions[row['ion name']].transitions.wavelength[~ions[row['ion name']].transitions.is_twophoton]
-    iwave = int(np.argmin(np.fabs(waves-row['wavelength'])))
-    _goft = goft[row['ion name']][...,iwave].squeeze()
-    ax.plot(temperature, _goft, color=element_colors[row['element']], label=row['element'])
-    ax.text(temperature[_goft.argmax()].value, _goft.max().value, row['ion name'],
-            horizontalalignment='center', verticalalignment='bottom', clip_on=True)
+for row in all_lines[all_lines['observed by MOXSI']]:
+    _temp = row['contribution function temperature']
+    _goft = row['contribution function']
+    ax.plot(_temp, _goft, color=element_colors[row['element']], label=row['element'])
+    ax.text(_temp[_goft.argmax()].value,
+            _goft.max().value,
+            row['ion name'],
+            horizontalalignment='center',
+            verticalalignment='bottom',
+            clip_on=True)
 ax.set_xscale('log')
 ax.set_yscale('log')
 ax.set_ylim(1e-26, 1e-23)
-ax.set_xlim(temperature[[0,-1]].value)
+ax.set_xlim(_temp[[0,-1]].value)
 ax.set_xlabel('$T$ [K]')
 ax.set_ylabel(f'$G(T)$ [{_goft.unit.to_string(format="latex_inline")}]')
 handles, labels = ax.get_legend_handles_labels()
 by_label = dict(zip(labels, handles))
 ax.legend(by_label.values(), by_label.keys(), frameon=False)
 
-# Add model DEM distributions
-ax2 = ax.twinx()
-bins_T, H = calculate_em(
-    res_single['time'], res_single['electron_temperature'], res_single['density'], L)
-plot_histogram(H.value, bins_T.value, ax2, color=frequency_palette[1], alpha=0.7, label='impulsive')
-bins_T, H = calculate_em(
-    res_multi['time'], res_multi['electron_temperature'], res_multi['density'], L)
-plot_histogram(H.value, bins_T.value, ax2, color=frequency_palette[0], alpha=0.7, label='steady-ish')
-ax2.set_xscale('log')
-ax2.set_yscale('log')
-ax2.set_ylim(5e25, 3e28)
-ax2.set_ylabel(r'EM [cm$^{-5}$]')
-ax2.legend(frameon=False, loc=2)
+plt.show()
+```
+
+---
+
+```{python}
+#| eval: true
+#| echo: false
+mcmc_all_lines = []
+for row in all_lines:
+    name = f"{row['ion name']}_{row['wavelength']:.3f}"
+    eline = EmissionLine(
+        cont_func=ContFuncDiscrete(row['contribution function temperature'],
+                                   row['contribution function'].to_value('erg cm3 s-1')*u.Unit('cm5 K-1'),
+                                   name=name),
+        intensity_obs=row['intensity'].to_value('erg cm-2 s-1'),
+        sigma_intensity_obs=row['intensity error'].to_value('erg cm-2 s-1'),
+        name=name,
+    )
+    mcmc_all_lines.append(eline)
+
+dem_result_all = predict_dem_emcee(mcmc_all_lines, mcmc_temperature_bins, nwalkers=200, nsteps=3000)
+```
+
+```{python}
+fig = plt.figure(figsize=(13, 8))
+ax = fig.add_subplot()
+
+with quantity_support():
+    for sample in dem_result_all.samples:
+        ax.stairs(sample.value*u.Unit('cm-5 K-1')*mcmc_temperature_bins.bin_widths,
+                  edges=mcmc_temperature_bins.edges,
+                  color='k',
+                  alpha=0.35)
+    ax.stairs(res_single['em_corona'].mean(axis=0),
+              edges=res_single['dem_temperature_edges'],
+              color=frequency_palette[1],
+              lw=3)
+    for row in all_lines:
+        ax.plot(row['contribution function temperature'],
+                row['intensity']/row['contribution function'],
+                color=element_colors[row['element']],
+                ls='-' if row['observed by MOXSI'] else '--')
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(mcmc_temperature_bins.min * 0.9, mcmc_temperature_bins.max * 1.1)
+    ax.set_ylim(1e25*u.cm**(-5), 1e30*u.cm**(-5))
+    ax.set_xlabel('$T$ [K]')
+    ax.set_ylabel('$\mathrm{EM}$ [cm$^{-5}$]')
 
 plt.show()
 ```
+
 
 ## Not Many Observations Here...
 
@@ -333,9 +520,10 @@ CubIXSS ~~6U~~ 16U cubesat launching 2025
 
 :::: {.columns}
 ::: {.column width="60%"}
+- One of two instruments on the Cubesat Imaging X-ray Solar Spectrometer (**CubIXSS**)
 - Full-disk slitless spectrograph ("overlappograph")
 - Four XRT-like filtergram images 
-- Spectral coverage from 1--60 Å (12--0.2 keV)
+- Spectral coverage from **1--60 Å (12--0.2 keV)**
 - Spatial plate scale: 7.4 arcsec pixel$^{-1}$
 - Spectral plate scale: 72 mÅ pixel$^{-1}$
 - Heritage transmission gratings from *Chandra*
@@ -343,7 +531,7 @@ CubIXSS ~~6U~~ 16U cubesat launching 2025
 - Integration time: 1 h (ARs), 1 minute (flares)
 :::
 ::: {.column width="40%"}
-![](static/CubIXSS_badge.png)
+![](static/moxsi-pinhole-layout.png)
 :::
 ::::
 
@@ -409,7 +597,7 @@ cb.update_ticks()
 # Add wavelength annotations
 annot_pt = SkyCoord(Tx=-1000*u.arcsec, Ty=0*u.arcsec, frame=wcs_to_celestial_frame(observed_stacked.wcs))
 line_indices = [1, 3, 10, 12, 16, 18]
-for line in selected_lines[line_indices]:
+for line in hot_lines[line_indices]:
     pix_x, pix_y, _ = observed_stacked.wcs.world_to_pixel(annot_pt, line['wavelength'])
     ax.annotate(f'{line["ion name"]}',
                 xy=(pix_x, pix_y),  # theta, radius
@@ -421,7 +609,7 @@ for line in selected_lines[line_indices]:
                 verticalalignment='center',
                 rotation=90,
                 fontsize=12)
-for line in selected_lines[line_indices]:
+for line in hot_lines[line_indices]:
     pix_x, pix_y, _ = stack_components(observed_components, wcs_index=0).wcs.world_to_pixel(annot_pt, line['wavelength'])
     ax.annotate(f'{line["ion name"]}',
                 xy=(pix_x, pix_y),  # theta, radius
@@ -496,8 +684,8 @@ for i,ol in enumerate(observed_components[4:]+[observed_stacked,] ):
 center_loc = SkyCoord(Ty=-440*u.arcsec, Tx=0*u.arcsec, frame=wcs_to_celestial_frame(observed_components[0].wcs))
 line_indices = [1, 3, 4, 10, 13, 15, 16, 18]
 for ol, color in zip(observed_components[5:7], spectral_palette[1:]):
-    line_pos, _, _ = ol[:,330:400,900:].wcs.world_to_pixel(center_loc, selected_lines[line_indices]['wavelength'])
-    for pos, row in zip(line_pos, selected_lines[line_indices]):
+    line_pos, _, _ = ol[:,330:400,900:].wcs.world_to_pixel(center_loc, hot_lines[line_indices]['wavelength'])
+    for pos, row in zip(line_pos, hot_lines[line_indices]):
         bump_up = abs(ol.meta['PC2_3'])%2 == 0
         bump = 30
         text_ypos = 360
@@ -634,12 +822,12 @@ Compute DEM from $n,T_e$ from loop simulations at 1 s cadence for total duration
 ---
 
 ```{python}
-spec_cube_hf = read_data_cube(simulation_data_dir / 'p0.3' / 'spectra' / 'spec_cube_t1000.fits')
-spec_cube_lf = read_data_cube(simulation_data_dir / 'p0.005' / 'spectra' / 'spec_cube_t1000.fits')
+spec_cube_hf = read_data_cube(simulation_data_dir / 'p0.3' / 'spectra' / 'spec_cube_t1000.fits', hdu=1)
+spec_cube_lf = read_data_cube(simulation_data_dir / 'p0.005' / 'spectra' / 'spec_cube_t1000.fits', hdu=1)
 
 line_indices = [0, 9, 2, 3, 10]
 fig = plt.figure(figsize=(14,6.8))
-for i, row in enumerate(selected_lines[line_indices]):
+for i, row in enumerate(hot_lines[line_indices]):
     iwave = int(np.argmin(np.fabs(row['wavelength'] - spec_cube_hf.axis_world_coords(0)[0])))
     ax = fig.add_subplot(2,len(line_indices), i+1, projection=spec_cube_hf[iwave].wcs)
     vmin,vmax = AsymmetricPercentileInterval(2,99.99).get_limits(spec_cube_lf[iwave].data)
@@ -684,11 +872,11 @@ Low-frequency heating produces excess core emission in hot lines
 :::
 
 ```{python}
-overlappograms_hf = [read_overlappogram(file) for file in (simulation_data_dir / f'p0.3' / 'overlappograms').glob('overlappogram_o*.fits')]
-overlappograms_lf = [read_overlappogram(file) for file in (simulation_data_dir / f'p0.005' / 'overlappograms').glob('overlappogram_o*.fits')]
+overlappograms_hf = [read_overlappogram(file) for file in sorted((pipeline_dir / f'p0.3' / 'overlappograms').glob('overlappogram_o*.fits'))]
+overlappograms_lf = [read_overlappogram(file) for file in sorted((pipeline_dir / f'p0.005' / 'overlappograms').glob('overlappogram_o*.fits'))]
 
 sl = np.s_[0, 330:400, 900:]
-norm = ImageNormalize(vmin=0, vmax=50, stretch=LogStretch())
+norm = ImageNormalize(vmin=0, vmax=4e3, stretch=LogStretch())
 fig = plt.figure(figsize=(14, 2))
 axes = []
 for i, overlaps in enumerate([overlappograms_hf, overlappograms_lf]):
@@ -697,7 +885,7 @@ for i, overlaps in enumerate([overlappograms_hf, overlappograms_lf]):
     cropped_cube.plot(
         axes=ax,
         norm=norm,
-        data_unit='photon',
+        data_unit='ct',
         cmap='viridis',
         interpolation='none'
     )
@@ -723,12 +911,12 @@ for ol, color, label in zip([overlappograms_hf, overlappograms_lf], frequency_pa
     total_rebin = ol_stacked[0].rebin((ol_stacked[0].data.shape[0], 1),operation=np.sum)[0]
     if ax is None:
         ax = fig.add_subplot(projection=total_rebin)
-    total_rebin.plot(axes=ax, ls='-', data_unit='ph', label=label, color=color)
+    total_rebin.plot(axes=ax, ls='-', data_unit='ct', label=label, color=color)
 
-ax.set_yscale('symlog')
-ax.set_ylim(0, 215)
+ax.set_yscale('log')
+ax.set_ylim(10, 6e4)
 ax.set_xlim(980, 2000)
-ax.set_ylabel('Summed Counts [ph]')
+ax.set_ylabel('Summed Counts [DN]')
 ax.coords[1].set_axislabel('HPC Latitude')
 ax.legend(frameon=False)
 
@@ -744,20 +932,19 @@ fig = plt.figure(figsize=(14, 5.5))
 hf_stacked = stack_components(overlappograms_hf)
 hf_summed = hf_stacked[0].rebin((hf_stacked[0].data.shape[0], 1),operation=np.sum)[0]
 ax = fig.add_subplot(projection=hf_summed)
-hf_summed.plot(axes=ax, ls='-', data_unit='ph', label='High frequency', color=frequency_palette[0])
+hf_summed.plot(axes=ax, ls='-', data_unit='ct', label='High frequency', color=frequency_palette[0])
 # LF
 lf_stacked = stack_components(overlappograms_lf)
 lf_summed = lf_stacked[0].rebin((lf_stacked[0].data.shape[0], 1),operation=np.sum)[0]
-lf_summed.plot(axes=ax, ls='-', data_unit='ph', label='Low frequency', color=frequency_palette[1])
+lf_summed.plot(axes=ax, ls='-', data_unit='ct', label='Low frequency', color=frequency_palette[1])
 
 ar_center = SkyCoord(Tx=50*u.arcsec,
                      Ty=-505*u.arcsec,
                      frame=wcs_to_celestial_frame(overlappograms_hf[0].wcs))
 
-fe_lines = selected_lines[selected_lines['element']=='Fe']
-for ol, color in zip(overlappograms_hf[1:3], spectral_palette[1:]):
-    line_pos, _, _ = ol.wcs.world_to_pixel(ar_center, fe_lines['wavelength'])
-    for pos, row in zip(line_pos, fe_lines):
+for ol, color in zip(overlappograms_hf[5:], spectral_palette[1:]):
+    line_pos, _, _ = ol.wcs.world_to_pixel(ar_center, hot_lines['wavelength'])
+    for pos, row in zip(line_pos, hot_lines):
         text_ypos = 950
         ax.annotate(
             f'{row["ion name"]}, {row["wavelength"].to_string(format="latex_inline", precision=5)}',
@@ -771,80 +958,48 @@ for ol, color in zip(overlappograms_hf[1:3], spectral_palette[1:]):
             arrowprops=dict(color=color, arrowstyle='-', ls='--'),
         )
 
-ax.set_ylim(0, 215)
-ax.set_xlim(1050, 1250)
-ax.set_ylabel('Summed Counts [ph]')
+#ax.set_yscale('symlog')
+ax.set_ylim(0, 5e4)
+ax.set_xlim(980, 1600)
+ax.set_ylabel('Summed Counts [DN]')
 ax.coords[1].set_axislabel('HPC Latitude')
 ax.legend(frameon=False)
 
 plt.show()
 ```
+
+## Inverting MOXSI Data
+
+Usual emission measure distribution inversion can be done per pixel,
+
+$$
+I(c) = \mathrm{EM}(T)R(c,T)
+$$
+
+For slitless spectrograph data, each pixel includes contributions from *many spatial locations* and *many temperatures*,
+
+$$
+I(p) = \mathrm{EM}(x,T)R(p,x,T)
+$$
+
+::: {.aside}
+@winebarger_unfolding_2019, @cheung_multi-component_2019, @savage_first_2023
+:::
+
+::: {.notes}
+- one slide that shows the equations for the inversion and appropriate references
+- one slide that shows three different inversion results (Ridge, LASSO, ElasticNet) with the "true" EM distributions overlaid
+:::
 
 ---
 
-```{python}
-fig = plt.figure(figsize=(14, 5.5))
-ax = fig.add_subplot(projection=hf_summed)
-hf_summed.plot(axes=ax, ls='-', data_unit='ph', label='High frequency', color=frequency_palette[0])
-lf_summed.plot(axes=ax, ls='-', data_unit='ph', label='Low frequency', color=frequency_palette[1])
+![](static/em-inverted-true-compare.png)
 
-si_mg_lines = selected_lines[[r in ['Si', 'Mg'] for r in selected_lines['element']]]
-for ol, color in zip(overlappograms_hf[1:], spectral_palette[1:]):
-    line_pos, _, _ = ol.wcs.world_to_pixel(ar_center, si_mg_lines['wavelength'])
-    for pos, row in zip(line_pos, si_mg_lines):
-        ax.annotate(
-            f'{row["ion name"]}, {row["wavelength"].to_string(format="latex_inline", precision=5)}',
-            (pos, 0),
-            xytext=(0, text_ypos),
-            textcoords='offset pixels',
-            rotation=90,
-            color=color,
-            horizontalalignment='center',
-            verticalalignment='center',
-            arrowprops=dict(color=color, arrowstyle='-', ls='--'),
-        )
-
-ax.set_ylim(0, 215)
-ax.set_xlim(980, 1500)
-ax.set_ylabel('Summed Counts [ph]')
-ax.coords[1].set_axislabel('HPC Latitude')
-ax.legend(frameon=False)
-
-plt.show()
-```
-
----
-
-```{python}
-fig = plt.figure(figsize=(14, 5.5))
-ax = fig.add_subplot(projection=hf_summed)
-hf_summed.plot(axes=ax, ls='-', data_unit='ph', label='High frequency', color=frequency_palette[0])
-lf_summed.plot(axes=ax, ls='-', data_unit='ph', label='Low frequency', color=frequency_palette[1])
-
-O_lines = selected_lines[[r in ['O'] for r in selected_lines['element']]]
-for ol, color in zip(overlappograms_hf[1:], spectral_palette[1:]):
-    line_pos, _, _ = ol.wcs.world_to_pixel(ar_center, O_lines['wavelength'])
-    for pos, row in zip(line_pos, O_lines):
-        ax.annotate(
-            f'{row["ion name"]}, {row["wavelength"].to_string(format="latex_inline", precision=5)}',
-            (pos, 0),
-            xytext=(0, text_ypos),
-            textcoords='offset pixels',
-            rotation=90,
-            color=color,
-            horizontalalignment='center',
-            verticalalignment='center',
-            arrowprops=dict(color=color, arrowstyle='-', ls='--'),
-        )
-
-ax.set_ylim(0, 70)
-ax.set_xlim(1190, 1600)
-ax.set_ylabel('Summed Counts [ph]')
-ax.coords[1].set_axislabel('HPC Latitude')
-ax.legend(frameon=False)
-
-plt.show()
-```
+::: {.aside}
+* Ridge: prioritize smoothness
+* Lasso: prioritize sparsity
+* ElasticNet: balance both sparsity and smoothness
+:::
 
 ## Summary
 
@@ -852,8 +1007,11 @@ plt.show()
 - MOXSI will observe many ARs 1--60 Å range
 - Low-frequency AR heating produces excess hot emission (Fe XVII, XVIII, XIX, XXI, Si XIV)
 - Extracting these signatures from MOXSI data is **challenging, but feasible!**
-- **Future:** Inversions! [e.g. @winebarger_unfolding_2019]
-- **Future:** Strategies for improving instrument throughput
+- Inversion of MOXSI spectra **recovers hot (>4 MK) component of EM distribution**
+- **Future:**
+    - Further investigation of inversion models
+    - Tuning hyperparameters to adjust sparsity, smoothness
+    - Investigate more heating scenarios
 
 ## References
 
