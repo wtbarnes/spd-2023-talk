@@ -488,6 +488,10 @@ CubIXSS ~~6U~~ 16U cubesat launching 2025
 :::
 ::::
 
+::: {.notes}
+1 year prime mission, will observe lots of active regions, well-positioned to place tighter constraints on amount of hot plasma in ARs
+:::
+
 ## MOXSI Data
 
 ```{python}
@@ -841,7 +845,12 @@ ax.set_ylim(0, 5e4)
 ax.set_xlim(980, 1600)
 ax.set_ylabel('Summed Counts [DN]')
 ax.coords[1].set_axislabel('HPC Latitude')
-ax.legend(frameon=False)
+from matplotlib.lines import Line2D
+ax.legend(
+    [Line2D([0], [0], color=spectral_palette[i], lw=2) for i in range(1,5)],
+    [f'order={i}' for i in range(1,5)],
+    frameon=False
+)
 
 plt.show()
 ```
