@@ -1,6 +1,6 @@
 ---
 title: "Constraining Very Hot Active Region Plasma with MOXSI"
-subtitle: "AAS SPD Meeting / University of Minnesota, Minneapolis, MN / 15 August 2023"
+subtitle: "AAS SPD Meeting / Minneapolis, MN / 15 August 2023"
 author:
 - "Will Barnes"
 - "Albert Shih"
@@ -40,6 +40,7 @@ import numpy as np
 import matplotlib
 import matplotlib.ticker
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from matplotlib.gridspec import GridSpec
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.interpolate import interp1d
@@ -475,7 +476,7 @@ CubIXSS ~~6U~~ 16U cubesat launching 2025
 - One of two instruments on the Cubesat Imaging X-ray Solar Spectrometer (**CubIXSS**)
 - Full-disk slitless spectrograph ("overlappograph")
 - Four XRT-like filtergram images 
-- Spectral coverage from **1--60 Å (12--0.2 keV)**
+- Spectral coverage from **1--72 Å (12.4--0.17 keV)**
 - Spatial plate scale: 7.4 arcsec pixel$^{-1}$
 - Spectral plate scale: 72 mÅ pixel$^{-1}$
 - Heritage transmission gratings from *Chandra*
@@ -509,7 +510,6 @@ observed_stacked[sl].plot(
     axes=ax,
     norm=ImageNormalize(vmin=vmin,vmax=vmax,stretch=LogStretch()),cmap='viridis',
 )
-#color_lat_lon_axes(ax)
 add_arrow_from_coords(ax, (1200,-400)*u.arcsec, (1200, 400)*u.arcsec, color='C4', mutation_scale=15,)
 color_lat_lon_axes(ax, lon_color='C1', lat_color='C4')
 for c in ax.coords:
@@ -755,14 +755,15 @@ Low-frequency heating produces excess core emission in hot lines
 ```{python}
 overlappograms_hf = [read_overlappogram(file) for file in sorted((pipeline_dir / f'p0.3' / 'overlappograms').glob('overlappogram_o*.fits'))]
 overlappograms_lf = [read_overlappogram(file) for file in sorted((pipeline_dir / f'p0.005' / 'overlappograms').glob('overlappogram_o*.fits'))]
+labels = ['High frequency', 'Low frequency']
 
-sl = np.s_[0, 300:430, :]
+sl = np.s_[0, 280:450, :]
 norm = ImageNormalize(vmin=0, vmax=3e3, stretch=LogStretch())
-fig = plt.figure(figsize=(14, 2.5))
+fig = plt.figure(figsize=(14, 7))
 axes = []
-for i, overlaps in enumerate([overlappograms_hf, overlappograms_lf]):
+for i, (overlaps, label) in enumerate(zip([overlappograms_hf, overlappograms_lf], labels)):
     cropped_cube = stack_components(overlaps)[sl]
-    ax = fig.add_subplot(2, 1, i+1, projection=cropped_cube.wcs)
+    ax = fig.add_subplot(3, 1, i+1, projection=cropped_cube.wcs)
     cropped_cube.plot(
         axes=ax,
         norm=norm,
@@ -773,8 +774,16 @@ for i, overlaps in enumerate([overlappograms_hf, overlappograms_lf]):
     color_lat_lon_axes(ax)
     ax.coords[1].set_axislabel('HPC Latitude' if i>0 else ' ')
     ax.coords[0].set_axislabel('HPC Longitude' if i>0 else ' ')
+    ax.coords[0].set_ticks(([-500, 0, 500]*u.arcsec).to('deg'))
+    ax.coords[1].set_ticks(([-1000, 0, 1000]*u.arcsec).to('deg'))
+    ax.coords[0].set_major_formatter('s')
+    ax.coords[1].set_major_formatter('s')
     if i == 0:
         ax.coords[1].set_ticklabel_visible(False)
+    ax.text(10, cropped_cube.data.shape[0]-10, label,
+            verticalalignment='top',
+            horizontalalignment='left',
+            color='w')
     axes.append(ax)
 
 cb = fig.colorbar(ax.get_images()[0], extend='max', ax=axes, orientation='horizontal', location='top', aspect=75)
@@ -782,22 +791,38 @@ cb.set_label('DN')
 cb.locator = matplotlib.ticker.MaxNLocator(nbins=3)
 cb.update_ticks()
 
-plt.show()
-```
-```{python}
-fig = plt.figure(figsize=(14, 3))
 ax = None
-labels = ['High frequency', 'Low frequency']
 for ol, color, label in zip([overlappograms_hf, overlappograms_lf], frequency_palette, labels):
     ol_stacked = stack_components(ol)
     total_rebin = ol_stacked[0].rebin((ol_stacked[0].data.shape[0], 1),operation=np.sum)[0]
     if ax is None:
-        ax = fig.add_subplot(projection=total_rebin)
+        ax = fig.add_subplot(3,1,3,projection=total_rebin)
     total_rebin.plot(axes=ax, ls='-', data_unit='ct', label=label, color=color)
 
 ax.set_yscale('log')
-ax.set_ylim(10, 6e4)
+ax.set_ylim(10, 3e5)
 ax.set_xlim(0, 2000)
+ax.set_ylabel('Summed Counts [DN]')
+ax.coords[1].set_axislabel('HPC Latitude')
+ax.legend(frameon=False)
+
+plt.show()
+```
+
+## HF versus LF: Where do they differ?
+
+```{python}
+fig = plt.figure(figsize=(14, 5.5))
+
+hf_stacked = stack_components(overlappograms_hf)
+hf_summed = hf_stacked[0].rebin((hf_stacked[0].data.shape[0], 1),operation=np.sum)[0]
+ax = fig.add_subplot(projection=hf_summed)
+hf_summed.plot(axes=ax, ls='-', data_unit='ct', label='High frequency', color=frequency_palette[0])
+lf_stacked = stack_components(overlappograms_lf)
+lf_summed = lf_stacked[0].rebin((lf_stacked[0].data.shape[0], 1),operation=np.sum)[0]
+lf_summed.plot(axes=ax, ls='-', data_unit='ct', label='Low frequency', color=frequency_palette[1])
+ax.set_ylim(0, 5e4)
+ax.set_xlim(980, 1600)
 ax.set_ylabel('Summed Counts [DN]')
 ax.coords[1].set_axislabel('HPC Latitude')
 ax.legend(frameon=False)
@@ -808,52 +833,113 @@ plt.show()
 ---
 
 ```{python}
+
+def add_line_annotations(ax, cubes, colors, source_pos, line_table):
+    for ol, color in zip(cubes, colors):
+        line_pos, _, _ = ol.wcs.world_to_pixel(source_pos, line_table['wavelength'])
+        for pos, row in zip(line_pos, line_table):
+            text_ypos = 950
+            ax.annotate(
+                f'{row["ion name"]}, {row["wavelength"].to_string(format="latex_inline", precision=5)}',
+                (pos, 0),
+                xytext=(0, text_ypos),
+                textcoords='offset pixels',
+                rotation=90,
+                color=color,
+                horizontalalignment='center',
+                verticalalignment='center',
+                arrowprops=dict(color=color, arrowstyle='-', ls='--'),
+            )
+```
+
+```{python}
 fig = plt.figure(figsize=(14, 5.5))
 
-# HF
-hf_stacked = stack_components(overlappograms_hf)
-hf_summed = hf_stacked[0].rebin((hf_stacked[0].data.shape[0], 1),operation=np.sum)[0]
 ax = fig.add_subplot(projection=hf_summed)
 hf_summed.plot(axes=ax, ls='-', data_unit='ct', label='High frequency', color=frequency_palette[0])
-# LF
-lf_stacked = stack_components(overlappograms_lf)
-lf_summed = lf_stacked[0].rebin((lf_stacked[0].data.shape[0], 1),operation=np.sum)[0]
 lf_summed.plot(axes=ax, ls='-', data_unit='ct', label='Low frequency', color=frequency_palette[1])
-
 ar_center = SkyCoord(Tx=50*u.arcsec,
                      Ty=-505*u.arcsec,
                      frame=wcs_to_celestial_frame(overlappograms_hf[0].wcs))
+max_order_index = 1
+add_line_annotations(ax, overlappograms_hf[5:5+max_order_index], spectral_palette[1:], ar_center, hot_lines)
 
-for ol, color in zip(overlappograms_hf[5:], spectral_palette[1:]):
-    line_pos, _, _ = ol.wcs.world_to_pixel(ar_center, hot_lines['wavelength'])
-    for pos, row in zip(line_pos, hot_lines):
-        text_ypos = 950
-        ax.annotate(
-            f'{row["ion name"]}, {row["wavelength"].to_string(format="latex_inline", precision=5)}',
-            (pos, 0),
-            xytext=(0, text_ypos),
-            textcoords='offset pixels',
-            rotation=90,
-            color=color,
-            horizontalalignment='center',
-            verticalalignment='center',
-            arrowprops=dict(color=color, arrowstyle='-', ls='--'),
-        )
-
-#ax.set_yscale('symlog')
 ax.set_ylim(0, 5e4)
 ax.set_xlim(980, 1600)
 ax.set_ylabel('Summed Counts [DN]')
 ax.coords[1].set_axislabel('HPC Latitude')
-from matplotlib.lines import Line2D
 ax.legend(
-    [Line2D([0], [0], color=spectral_palette[i], lw=2) for i in range(1,5)],
-    [f'order={i}' for i in range(1,5)],
+    [Line2D([0], [0], color=spectral_palette[i], lw=2) for i in range(1,1+max_order_index)],
+    [f'order={i}' for i in range(1,1+max_order_index)],
     frameon=False
 )
-
 plt.show()
 ```
+
+---
+
+```{python}
+fig = plt.figure(figsize=(14, 5.5))
+ax = fig.add_subplot(projection=hf_summed)
+hf_summed.plot(axes=ax, ls='-', data_unit='ct', label='High frequency', color=frequency_palette[0])
+lf_summed.plot(axes=ax, ls='-', data_unit='ct', label='Low frequency', color=frequency_palette[1])
+max_order_index = 2
+add_line_annotations(ax, overlappograms_hf[5:5+max_order_index], spectral_palette[1:], ar_center, hot_lines)
+ax.set_ylim(0, 5e4)
+ax.set_xlim(980, 1600)
+ax.set_ylabel('Summed Counts [DN]')
+ax.coords[1].set_axislabel('HPC Latitude')
+ax.legend(
+    [Line2D([0], [0], color=spectral_palette[i], lw=2) for i in range(1,1+max_order_index)],
+    [f'order={i}' for i in range(1,1+max_order_index)],
+    frameon=False
+)
+plt.show()
+```
+
+---
+
+```{python}
+fig = plt.figure(figsize=(14, 5.5))
+ax = fig.add_subplot(projection=hf_summed)
+hf_summed.plot(axes=ax, ls='-', data_unit='ct', label='High frequency', color=frequency_palette[0])
+lf_summed.plot(axes=ax, ls='-', data_unit='ct', label='Low frequency', color=frequency_palette[1])
+max_order_index = 3
+add_line_annotations(ax, overlappograms_hf[5:5+max_order_index], spectral_palette[1:], ar_center, hot_lines)
+ax.set_ylim(0, 5e4)
+ax.set_xlim(980, 1600)
+ax.set_ylabel('Summed Counts [DN]')
+ax.coords[1].set_axislabel('HPC Latitude')
+ax.legend(
+    [Line2D([0], [0], color=spectral_palette[i], lw=2) for i in range(1,1+max_order_index)],
+    [f'order={i}' for i in range(1,1+max_order_index)],
+    frameon=False
+)
+plt.show()
+```
+
+---
+
+```{python}
+fig = plt.figure(figsize=(14, 5.5))
+ax = fig.add_subplot(projection=hf_summed)
+hf_summed.plot(axes=ax, ls='-', data_unit='ct', label='High frequency', color=frequency_palette[0])
+lf_summed.plot(axes=ax, ls='-', data_unit='ct', label='Low frequency', color=frequency_palette[1])
+max_order_index = 4
+add_line_annotations(ax, overlappograms_hf[5:5+max_order_index], spectral_palette[1:], ar_center, hot_lines)
+ax.set_ylim(0, 5e4)
+ax.set_xlim(980, 1600)
+ax.set_ylabel('Summed Counts [DN]')
+ax.coords[1].set_axislabel('HPC Latitude')
+ax.legend(
+    [Line2D([0], [0], color=spectral_palette[i], lw=2) for i in range(1,1+max_order_index)],
+    [f'order={i}' for i in range(1,1+max_order_index)],
+    frameon=False
+)
+plt.show()
+```
+
+---
 
 ## Inverting MOXSI Data
 
@@ -873,7 +959,7 @@ $$
 @winebarger_unfolding_2019, @cheung_multi-component_2019, @savage_first_2023
 :::
 
-## Recovered versus True Emission Measure
+## Preliminary Results: Inverted vs. True EM
 
 ![](static/em-inverted-true-compare.png)
 
@@ -887,7 +973,7 @@ See poster 110.24 by A. Hochedez
 ## Summary
 
 - SXR holds key diagnostics for finding the 🚬🔫
-- MOXSI will observe many ARs 1--60 Å range
+- MOXSI will observe many ARs 1--72 Å range
 - Low-frequency AR heating produces excess hot emission (Fe XVII, XVIII, XIX, XXI, Si XIV)
 - Extracting these signatures from MOXSI data is **challenging, but feasible!**
 - **Future:** Tuning hyperparameters to adjust sparsity, smoothness
