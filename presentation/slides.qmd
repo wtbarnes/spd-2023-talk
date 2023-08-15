@@ -370,52 +370,10 @@ plt.show()
 @winebarger_defining_2012
 :::
 
-::: {.notes}
-Replace this with my simulation/reconstruction of the DEM with only cool only lines
-:::
-
-## Some Observations in the HXRs
-
-:::: {.columns}
-
-::: {.column width="45%"}
-![@ishikawa_detection_2017](static/ishikawa_foxsi_2017_dem.png)
-:::
-
-::: {.column width="55%"}
-![@ishikawa_hot_2019](static/ishikawa_krucker_2019_dem.png)
-:::
-
-::::
-
-::: aside
-See talk by J. Duncan on Thursday, Session 406
-:::
-
 ## Key Diagnostics in the SXR Range
 
 ```{python}
-spectral_table = SpectralModel().spectral_table
-
-fig = plt.figure(figsize=(14, 7))
-vmin, vmax = AsymmetricPercentileInterval(1,99).get_limits(spectral_table.data)
-ax = spectral_table.plot(aspect=20,
-                         norm=ImageNormalize(vmin=vmin, vmax=vmax, stretch=LogStretch()),
-                         axes_units=('MK', 'AA'),
-                         cmap='plasma')
-cb = fig.colorbar(ax.get_images()[0], ax=ax, pad=0.01)
-cb.set_label(spectral_table.unit.to_string(format='latex_inline'))
-ax.coords[0].set_axislabel('Wavelength [Å]')
-ax.coords[1].set_axislabel('Temperature [MK]')
-ax.set_xlim(spectral_table.wcs.world_to_pixel([1,60]*u.AA, 1*u.MK)[0])
-ax.set_ylim(spectral_table.wcs.world_to_pixel(1*u.AA, [1,30]*u.MK)[1])
-plt.show()
-```
-
----
-
-```{python}
-fig = plt.figure(figsize=(13, 8))
+fig = plt.figure(figsize=(13, 5.5))
 ax = fig.add_subplot(111)
 for row in all_lines[all_lines['observed by MOXSI']]:
     _temp = row['contribution function temperature']
@@ -439,6 +397,10 @@ ax.legend(by_label.values(), by_label.keys(), frameon=False)
 
 plt.show()
 ```
+
+::: {.aside}
+Some in HXRs as well: FOXSI [@ishikawa_detection_2017], RHESSI [@ishikawa_hot_2019], NuSTAR (see talk by J. Duncan on Thursday, Session 406)
+:::
 
 ---
 
@@ -494,21 +456,11 @@ plt.show()
 
 ## Not Many Observations Here...
 
-![](static/wavelength-time-coverage.png)
-
-## ...But Some!
-
-:::: {.columns}
-::: {.column width="45%"}
-![@del_zanna_elemental_2014](static/del_zanna_mason_2014_dem.png)
+::: {.r-stack}
+![](static/wavelength-time-coverage.png){fig-align="center" width="75%"}
 :::
-::: {.column width="55%"}
-![@caspi_new_2015](static/caspi_2015_spectrum.png)
-:::
-::::
-
-::: aside
-Also recent results from MaGIXS rocket [@savage_first_2023]
+::: {.aside}
+...but some: SMM FCS [@del_zanna_elemental_2014], X123 [@caspi_new_2015], MaGIXS [@savage_first_2023]
 :::
 
 ## The Multi-Order X-ray Spectral Imager (MOXSI) {.smaller}
@@ -532,36 +484,9 @@ CubIXSS ~~6U~~ 16U cubesat launching 2025
 :::
 ::: {.column width="40%"}
 ![](static/moxsi-pinhole-layout.png)
+![](static/moxsi-grating.png)
 :::
 ::::
-
-## MOXSI Bandpasses
-
-```{python}
-filtergram_channels = [Channel(f'filtergram_{i}') for i in range(1,5)]
-dispersed_channels = [SpectrogramChannel(o) for o in range(0,5)]
-
-fig = plt.figure(figsize=(12,6))
-ax = fig.add_subplot()
-for chan,color in zip(dispersed_channels, spectral_palette):
-    ax.plot(chan.wavelength, chan.effective_area, color=color, label=f'order={chan.spectral_order}')
-for chan,color in zip(filtergram_channels, filtergram_palette):
-    ax.plot(chan.wavelength, chan.effective_area, color=color,
-            label='Al-poly' if 'Al' in chan.filter_label else chan.filter_label)
-
-ax.set_yscale('log')
-ax.set_xlim(1,70)
-ax.set_ylim(1e-11,1e-4)
-ax.set_xlabel('Wavelength [Å]')
-ax.set_ylabel('Effective Area [cm$^2$]')
-wave_to_energy = lambda x: u.Quantity(x, 'AA').to_value('keV', equivalencies=u.equivalencies.spectral())
-energy_to_wave = lambda x: u.Quantity(x, 'keV').to_value('AA', equivalencies=u.equivalencies.spectral())
-secax = ax.secondary_xaxis('top', functions=(wave_to_energy, energy_to_wave))
-secax.set_xlabel('Energy [keV]')
-secax.set_xticks([12, 2, 1, 0.5, 0.3, 0.2])
-ax.legend(frameon=False,ncol=2)
-plt.show()
-```
 
 ## MOXSI Data
 
@@ -630,7 +555,7 @@ plt.show()
 - Lines observed in both positive and negative orders
 :::
 
----
+## ...in many orders
 
 ```{python}
 width = 14
@@ -659,54 +584,6 @@ for i,ol in enumerate(observed_components[4:]+[observed_stacked,] ):
     cbar.update_ticks()
 
 plt.subplots_adjust(hspace=0.075)
-plt.show()
-```
-
----
-
-```{python}
-width = 14
-fig = plt.figure(figsize=(width, width*0.4))
-sl = np.s_[0,330:400,900:]
-labels = [f'order={i}' for i in range(5)] + ['All orders', ]
-data_unit = 'ph / pix / h'
-ax = None
-for i,ol in enumerate(observed_components[4:]+[observed_stacked,] ):
-    rebin_total = ol[sl].rebin((ol[sl].data.shape[0], 1), operation=np.sum)[0]
-    if ax is None:
-        ax = fig.add_subplot(projection=rebin_total.wcs)
-    rebin_total.plot(axes=ax,
-                     data_unit=data_unit,
-                     label=labels[i],
-                     color='k' if i==5 else spectral_palette[i])
-    
-# Add line labels
-center_loc = SkyCoord(Ty=-440*u.arcsec, Tx=0*u.arcsec, frame=wcs_to_celestial_frame(observed_components[0].wcs))
-line_indices = [1, 3, 4, 10, 13, 15, 16, 18]
-for ol, color in zip(observed_components[5:7], spectral_palette[1:]):
-    line_pos, _, _ = ol[:,330:400,900:].wcs.world_to_pixel(center_loc, hot_lines[line_indices]['wavelength'])
-    for pos, row in zip(line_pos, hot_lines[line_indices]):
-        bump_up = abs(ol.meta['PC2_3'])%2 == 0
-        bump = 30
-        text_ypos = 360
-        ax.annotate(
-            f'{row["ion name"]}, {row["wavelength"].to_string(format="latex_inline", precision=5)}',
-            (pos, 0),
-            xytext=(0, text_ypos+bump if bump_up else text_ypos),
-            textcoords='offset points',
-            rotation=90,
-            color=color,
-            horizontalalignment='center',
-            verticalalignment='center',
-            arrowprops=dict(color=color, arrowstyle='-', ls='--'),
-        )
-
-ax.set_ylabel('Summed Counts [ph/h]')
-ax.set_xlabel('Helioprojective Latitude [arcsec]')
-ax.set_yscale('symlog')
-ax.set_ylim(0,2e3)
-ax.set_xlim(0,ol[sl].data.shape[1])
-ax.legend(frameon=False)
 plt.show()
 ```
 
@@ -875,9 +752,9 @@ Low-frequency heating produces excess core emission in hot lines
 overlappograms_hf = [read_overlappogram(file) for file in sorted((pipeline_dir / f'p0.3' / 'overlappograms').glob('overlappogram_o*.fits'))]
 overlappograms_lf = [read_overlappogram(file) for file in sorted((pipeline_dir / f'p0.005' / 'overlappograms').glob('overlappogram_o*.fits'))]
 
-sl = np.s_[0, 330:400, 900:]
-norm = ImageNormalize(vmin=0, vmax=4e3, stretch=LogStretch())
-fig = plt.figure(figsize=(14, 2))
+sl = np.s_[0, 300:430, :]
+norm = ImageNormalize(vmin=0, vmax=3e3, stretch=LogStretch())
+fig = plt.figure(figsize=(14, 2.5))
 axes = []
 for i, overlaps in enumerate([overlappograms_hf, overlappograms_lf]):
     cropped_cube = stack_components(overlaps)[sl]
@@ -892,16 +769,17 @@ for i, overlaps in enumerate([overlappograms_hf, overlappograms_lf]):
     color_lat_lon_axes(ax)
     ax.coords[1].set_axislabel('HPC Latitude' if i>0 else ' ')
     ax.coords[0].set_axislabel('HPC Longitude' if i>0 else ' ')
+    if i == 0:
+        ax.coords[1].set_ticklabel_visible(False)
     axes.append(ax)
 
-cb = fig.colorbar(ax.get_images()[0], extend='max', ax=axes, pad=0.01)
-cb.set_label('photon')
+cb = fig.colorbar(ax.get_images()[0], extend='max', ax=axes, orientation='horizontal', location='top', aspect=75)
+cb.set_label('DN')
 cb.locator = matplotlib.ticker.MaxNLocator(nbins=3)
 cb.update_ticks()
 
 plt.show()
 ```
-
 ```{python}
 fig = plt.figure(figsize=(14, 3))
 ax = None
@@ -915,7 +793,7 @@ for ol, color, label in zip([overlappograms_hf, overlappograms_lf], frequency_pa
 
 ax.set_yscale('log')
 ax.set_ylim(10, 6e4)
-ax.set_xlim(980, 2000)
+ax.set_xlim(0, 2000)
 ax.set_ylabel('Summed Counts [DN]')
 ax.coords[1].set_axislabel('HPC Latitude')
 ax.legend(frameon=False)
@@ -986,19 +864,15 @@ $$
 @winebarger_unfolding_2019, @cheung_multi-component_2019, @savage_first_2023
 :::
 
-::: {.notes}
-- one slide that shows the equations for the inversion and appropriate references
-- one slide that shows three different inversion results (Ridge, LASSO, ElasticNet) with the "true" EM distributions overlaid
-:::
-
----
+## Recovered versus True Emission Measure
 
 ![](static/em-inverted-true-compare.png)
 
 ::: {.aside}
 * Ridge: prioritize smoothness
-* Lasso: prioritize sparsity
 * ElasticNet: balance both sparsity and smoothness
+
+See poster 110.24 by A. Hochedez
 :::
 
 ## Summary
@@ -1007,13 +881,136 @@ $$
 - MOXSI will observe many ARs 1--60 Å range
 - Low-frequency AR heating produces excess hot emission (Fe XVII, XVIII, XIX, XXI, Si XIV)
 - Extracting these signatures from MOXSI data is **challenging, but feasible!**
-- Inversion of MOXSI spectra **recovers hot (>4 MK) component of EM distribution**
-- **Future:**
-    - Further investigation of inversion models
-    - Tuning hyperparameters to adjust sparsity, smoothness
-    - Investigate more heating scenarios
+- **Future:** Tuning hyperparameters to adjust sparsity, smoothness
+- **Future:** Investigate wider heating parameter space
 
 ## References
 
 ::: {#refs}
 :::
+
+# Additional Slides
+
+## Some Observations in the HXRs
+
+:::: {.columns}
+
+::: {.column width="45%"}
+![@ishikawa_detection_2017](static/ishikawa_foxsi_2017_dem.png)
+:::
+
+::: {.column width="55%"}
+![@ishikawa_hot_2019](static/ishikawa_krucker_2019_dem.png)
+:::
+
+::::
+
+## Spectral Response in the SXR Range
+
+```{python}
+spectral_table = SpectralModel().spectral_table
+
+fig = plt.figure(figsize=(14, 7))
+vmin, vmax = AsymmetricPercentileInterval(1,99).get_limits(spectral_table.data)
+ax = spectral_table.plot(aspect=20,
+                         norm=ImageNormalize(vmin=vmin, vmax=vmax, stretch=LogStretch()),
+                         axes_units=('MK', 'AA'),
+                         cmap='plasma')
+cb = fig.colorbar(ax.get_images()[0], ax=ax, pad=0.01)
+cb.set_label(spectral_table.unit.to_string(format='latex_inline'))
+ax.coords[0].set_axislabel('Wavelength [Å]')
+ax.coords[1].set_axislabel('Temperature [MK]')
+ax.set_xlim(spectral_table.wcs.world_to_pixel([1,60]*u.AA, 1*u.MK)[0])
+ax.set_ylim(spectral_table.wcs.world_to_pixel(1*u.AA, [1,30]*u.MK)[1])
+plt.show()
+```
+
+## Some Observations in the SXR Range
+
+:::: {.columns}
+::: {.column width="45%"}
+![@del_zanna_elemental_2014](static/del_zanna_mason_2014_dem.png)
+:::
+::: {.column width="55%"}
+![@caspi_new_2015](static/caspi_2015_spectrum.png)
+:::
+::::
+
+::: aside
+Also recent results from MaGIXS rocket [@savage_first_2023]
+:::
+
+## MOXSI Bandpasses
+
+```{python}
+filtergram_channels = [Channel(f'filtergram_{i}') for i in range(1,5)]
+dispersed_channels = [SpectrogramChannel(o) for o in range(0,5)]
+
+fig = plt.figure(figsize=(12,6))
+ax = fig.add_subplot()
+for chan,color in zip(dispersed_channels, spectral_palette):
+    ax.plot(chan.wavelength, chan.effective_area, color=color, label=f'order={chan.spectral_order}')
+for chan,color in zip(filtergram_channels, filtergram_palette):
+    ax.plot(chan.wavelength, chan.effective_area, color=color,
+            label='Al-poly' if 'Al' in chan.filter_label else chan.filter_label)
+
+ax.set_yscale('log')
+ax.set_xlim(1,70)
+ax.set_ylim(1e-11,1e-4)
+ax.set_xlabel('Wavelength [Å]')
+ax.set_ylabel('Effective Area [cm$^2$]')
+wave_to_energy = lambda x: u.Quantity(x, 'AA').to_value('keV', equivalencies=u.equivalencies.spectral())
+energy_to_wave = lambda x: u.Quantity(x, 'keV').to_value('AA', equivalencies=u.equivalencies.spectral())
+secax = ax.secondary_xaxis('top', functions=(wave_to_energy, energy_to_wave))
+secax.set_xlabel('Energy [keV]')
+secax.set_xticks([12, 2, 1, 0.5, 0.3, 0.2])
+ax.legend(frameon=False,ncol=2)
+plt.show()
+```
+---
+
+```{python}
+width = 14
+fig = plt.figure(figsize=(width, width*0.4))
+sl = np.s_[0,330:400,900:]
+labels = [f'order={i}' for i in range(5)] + ['All orders', ]
+data_unit = 'ph / pix / h'
+ax = None
+for i,ol in enumerate(observed_components[4:]+[observed_stacked,] ):
+    rebin_total = ol[sl].rebin((ol[sl].data.shape[0], 1), operation=np.sum)[0]
+    if ax is None:
+        ax = fig.add_subplot(projection=rebin_total.wcs)
+    rebin_total.plot(axes=ax,
+                     data_unit=data_unit,
+                     label=labels[i],
+                     color='k' if i==5 else spectral_palette[i])
+    
+# Add line labels
+center_loc = SkyCoord(Ty=-440*u.arcsec, Tx=0*u.arcsec, frame=wcs_to_celestial_frame(observed_components[0].wcs))
+line_indices = [1, 3, 4, 10, 13, 15, 16, 18]
+for ol, color in zip(observed_components[5:7], spectral_palette[1:]):
+    line_pos, _, _ = ol[:,330:400,900:].wcs.world_to_pixel(center_loc, hot_lines[line_indices]['wavelength'])
+    for pos, row in zip(line_pos, hot_lines[line_indices]):
+        bump_up = abs(ol.meta['PC2_3'])%2 == 0
+        bump = 30
+        text_ypos = 360
+        ax.annotate(
+            f'{row["ion name"]}, {row["wavelength"].to_string(format="latex_inline", precision=5)}',
+            (pos, 0),
+            xytext=(0, text_ypos+bump if bump_up else text_ypos),
+            textcoords='offset points',
+            rotation=90,
+            color=color,
+            horizontalalignment='center',
+            verticalalignment='center',
+            arrowprops=dict(color=color, arrowstyle='-', ls='--'),
+        )
+
+ax.set_ylabel('Summed Counts [ph/h]')
+ax.set_xlabel('Helioprojective Latitude [arcsec]')
+ax.set_yscale('symlog')
+ax.set_ylim(0,2e3)
+ax.set_xlim(0,ol[sl].data.shape[1])
+ax.legend(frameon=False)
+plt.show()
+```
